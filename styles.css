@@ -164,3 +164,5 @@ textarea{resize:vertical; min-height:80px;}
   border:1px solid var(--line); border-radius:14px; padding:10px; background:rgba(0,0,0,0.2);
 }
 hr{border:none; border-top:1px solid var(--line); margin:14px 0;}
+
+.accent{color:var(--text);}

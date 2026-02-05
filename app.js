@@ -576,14 +576,7 @@ let state = null;
 
 function defaultState() {
   return {
-    profile: {
-      age: 21,
-      sex: "male",
-      weightKg: "",
-      hrRest: "",
-      hrMax: "",
-      calFactor: 1.0
-    },
+    profile: { age: 21, sex: "male", weightKg: "", hrRest: "", hrMax: "", calFactor: 1.0, kcalTarget: "", budgetMode: "mid" },
     meals: [],
     workouts: [],
     weights: [] // {date:"YYYY-MM-DD", kg:number}
@@ -626,6 +619,52 @@ const mealTime = document.getElementById("mealTime");
 const woTime = document.getElementById("woTime");
 mealTime.value = nowLocalISO();
 woTime.value = nowLocalISO();
+// Meals: auto estimate from text (no extra button), and stop overwriting after manual edits.
+let mealManual = false;
+function mealFieldsAllEmpty() {
+  const ids = ["kcalFinal","kcalLow","kcalHigh","mealUnc"];
+  return ids.every(id => ((document.getElementById(id)?.value || "").trim().length === 0));
+}
+function maybeAutoEstimateMeal() {
+  if (mealManual) return;
+  const name = (document.getElementById("mealName").value || "").trim();
+  const note = (document.getElementById("mealNote").value || "").trim();
+  const res = estimateKcalRangeFromText(`${name} ${note}`);
+  const sug = document.getElementById("mealTextSuggestions");
+  if (!res || !res.ok) return;
+
+  setKcalRangeFields(res.range.low, res.range.high);
+  document.getElementById("kcalFinal").value = res.range.mid || "";
+  document.getElementById("mealUnc").value = (+((res.uncSuggested ?? res.range.u ?? 0.25).toFixed(2)));
+
+  if (sug) {
+    const extra = res.followups ? ("  " + res.followups) : "";
+    sug.textContent = (res.explanation || "") + extra;
+  }
+  setStatus("已自动估算范围（可手改）");
+}
+
+// manual override detection: once user types in result fields, stop auto until cleared
+["kcalFinal","kcalLow","kcalHigh","mealUnc"].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    if (mealFieldsAllEmpty()) {
+      mealManual = false;
+      maybeAutoEstimateMeal();
+      return;
+    }
+    mealManual = true;
+  });
+});
+
+["mealName","mealNote"].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    if (!mealManual) maybeAutoEstimateMeal();
+  });
+});
 
 // Weight log
 document.getElementById("wDate").value = todayISO();
@@ -652,6 +691,8 @@ function fillProfileUI() {
   document.getElementById("hrrest").value = state.profile.hrRest;
   document.getElementById("hrmax").value = state.profile.hrMax;
   document.getElementById("calFactor").value = safeNum(state.profile.calFactor, 1.0).toFixed(2);
+  document.getElementById("kcalTarget").value = state.profile.kcalTarget;
+  document.getElementById("budgetMode").value = state.profile.budgetMode || "mid";
 }
 
 document.getElementById("saveProfile").addEventListener("click", async () => {
@@ -676,84 +717,17 @@ document.getElementById("resetProfile").addEventListener("click", async () => {
 });
 
 // Meals
-document.getElementById("autoMergeMeal").addEventListener("click", () => {
-  const m1 = {
-    kcal: safeNum(document.getElementById("kcal1").value, 0),
-    p: safeNum(document.getElementById("p1").value, 0),
-    c: safeNum(document.getElementById("c1").value, 0),
-    f: safeNum(document.getElementById("f1").value, 0),
-  };
-  const m2 = {
-    kcal: safeNum(document.getElementById("kcal2").value, 0),
-    p: safeNum(document.getElementById("p2").value, 0),
-    c: safeNum(document.getElementById("c2").value, 0),
-    f: safeNum(document.getElementById("f2").value, 0),
-  };
-  const out = autoMergeMeal(m1, m2);
-  document.getElementById("kcalFinal").value = out.kcal || "";
-  document.getElementById("pFinal").value = out.p || "";
-  document.getElementById("cFinal").value = out.c || "";
-  document.getElementById("fFinal").value = out.f || "";
-  document.getElementById("mealUnc").value = out.unc.toFixed(2);
-  setKcalRangeFromFinal(out.kcal, out.unc);
-  const sug = document.getElementById("mealTextSuggestions");
-  if (sug) sug.textContent = "";
-  setStatus("已按规则合并（你仍可手改）");
-});
-
 // text-only estimate -> fill kcal range (low-high) + mid
-document.getElementById("textEstimateMeal").addEventListener("click", () => {
-  const name = document.getElementById("mealName").value || "";
-  const note = document.getElementById("mealNote").value || "";
-  const res = estimateKcalRangeFromText(`${name} ${note}`);
-  const sug = document.getElementById("mealTextSuggestions");
-
-  if (!res.ok) {
-    if (sug) sug.textContent = "未能从文字识别到足够信息。建议写法：米饭 1碗(或180g) / 鸡肉 150g / 用油 1勺(10g) / 吃了70% 等。";
-    setStatus("文字估算失败：请补充食物名/份量");
-    return;
-  }
-
-  setKcalRangeFields(res.range.low, res.range.high);
-  document.getElementById("kcalFinal").value = res.range.mid || "";
-  document.getElementById("mealUnc").value = (+((res.uncSuggested ?? res.range.u ?? 0.25).toFixed(2)));
-
-  if (sug) {
-    const extra = res.followups ? ("  " + res.followups) : "";
-    sug.textContent = (res.explanation || "") + extra;
-  }
-
-  setStatus("已根据文字估算范围（可继续手改）");
-});
-
 document.getElementById("addMeal").addEventListener("click", async () => {
   const time = mealTime.value || nowLocalISO();
   const type = document.getElementById("mealType").value || "餐";
   const name = document.getElementById("mealName").value.trim();
-
-  const ext1 = {
-    kcal: safeNum(document.getElementById("kcal1").value, 0),
-    p: safeNum(document.getElementById("p1").value, 0),
-    c: safeNum(document.getElementById("c1").value, 0),
-    f: safeNum(document.getElementById("f1").value, 0),
-  };
-  const ext2 = {
-    kcal: safeNum(document.getElementById("kcal2").value, 0),
-    p: safeNum(document.getElementById("p2").value, 0),
-    c: safeNum(document.getElementById("c2").value, 0),
-    f: safeNum(document.getElementById("f2").value, 0),
-  };
-
-  const final = {
-    kcal: safeNum(document.getElementById("kcalFinal").value, 0),
-    p: safeNum(document.getElementById("pFinal").value, 0),
-    c: safeNum(document.getElementById("cFinal").value, 0),
-    f: safeNum(document.getElementById("fFinal").value, 0),
-  };
-  const unc = clamp(safeNum(document.getElementById("mealUnc").value, 0.35), 0, 1);
   const note = document.getElementById("mealNote").value.trim();
 
-  // kcal range input (preferred for uncertainty)
+  // prefer range fields; kcalFinal is treated as "mid"
+  const final = { kcal: safeNum(document.getElementById("kcalFinal").value, 0) };
+  let unc = clamp(safeNum(document.getElementById("mealUnc").value, 0.35), 0, 1);
+
   const kcalLowIn = safeNum(document.getElementById("kcalLow").value, 0);
   const kcalHighIn = safeNum(document.getElementById("kcalHigh").value, 0);
   let finalRange = null;
@@ -763,23 +737,31 @@ document.getElementById("addMeal").addEventListener("click", async () => {
     if (!final.kcal) final.kcal = Math.round((finalRange.kcalLow + finalRange.kcalHigh) / 2);
   }
 
-  if (!final.kcal && (ext1.kcal || ext2.kcal)) {
-    const merged = autoMergeMeal(ext1, ext2);
-    final.kcal = merged.kcal;
-    final.p = merged.p; final.c = merged.c; final.f = merged.f;
-
-    if (!finalRange && ext1.kcal && ext2.kcal) {
-      const lo = Math.min(ext1.kcal, ext2.kcal);
-      const hi = Math.max(ext1.kcal, ext2.kcal);
-      const margin = 0.05;
-      finalRange = { kcalLow: Math.round(lo * (1 - margin)), kcalHigh: Math.round(hi * (1 + margin)) };
+  // If user didn't fill numbers, try text estimate once before saving (no extra button)
+  if ((!final.kcal || !finalRange) && (name || note)) {
+    const res = estimateKcalRangeFromText(`${name} ${note}`);
+    if (res && res.ok) {
+      if (!finalRange) finalRange = { kcalLow: res.range.low, kcalHigh: res.range.high };
+      if (!final.kcal) final.kcal = res.range.mid || Math.round((finalRange.kcalLow + finalRange.kcalHigh) / 2);
+      if (!document.getElementById("mealUnc").value) unc = clamp(res.uncSuggested ?? unc, 0, 1);
+      // also sync UI if not manual
+      if (!mealManual) {
+        setKcalRangeFields(finalRange.kcalLow, finalRange.kcalHigh);
+        document.getElementById("kcalFinal").value = final.kcal || "";
+        document.getElementById("mealUnc").value = (+unc.toFixed(2));
+      }
     }
   }
 
-  // derive range from final kcal + unc if still missing
+  // derive range from mid + unc if still missing
   if (!finalRange && final.kcal) {
     const r = boundedRange(final.kcal, clamp(unc, 0.05, 0.60));
     finalRange = { kcalLow: r.low, kcalHigh: r.high };
+  }
+
+  if (!final.kcal && !finalRange) {
+    setStatus("请至少写一点描述（或手动填写 kcal 范围/中值）");
+    return;
   }
 
   // photo
@@ -796,7 +778,6 @@ document.getElementById("addMeal").addEventListener("click", async () => {
   const meal = {
     id: uid(),
     time, type, name,
-    ext1, ext2,
     final,
     finalRange,
     unc,
@@ -816,7 +797,8 @@ function clearMealForm(alsoTime = false) {
   if (alsoTime) mealTime.value = nowLocalISO();
   document.getElementById("mealType").value = "早餐";
   document.getElementById("mealName").value = "";
-  ["kcal1","p1","c1","f1","kcal2","p2","c2","f2","kcalFinal","pFinal","cFinal","fFinal","kcalLow","kcalHigh"].forEach(id => document.getElementById(id).value = "");
+  ["kcalFinal","kcalLow","kcalHigh"].forEach(id => document.getElementById(id).value = "");
+  mealManual = false;
   document.getElementById("mealUnc").value = "0.35";
   const sug = document.getElementById("mealTextSuggestions");
   if (sug) sug.textContent = "";
@@ -1067,44 +1049,59 @@ async function renderDash() {
   const today = todayISO();
   const meals = state.meals.filter(m => sameDayISO(m.time, today));
   const wos = state.workouts.filter(w => sameDayISO(w.time, today));
-  const inR = meals.reduce((acc, m) => {
-    const r = getMealKcalRange(m);
-    acc.low += r.low; acc.high += r.high;
-    return acc;
-  }, { low: 0, high: 0 });
-  const inK = Math.round((inR.low + inR.high) / 2);
+
+  // Intake range sums
+  let inMid = 0, inLow = 0, inHigh = 0;
+  for (const m of meals) {
+    const rr = getMealKcalRange(m);
+    inMid += safeNum(rr.mid, 0);
+    inLow += safeNum(rr.low, 0);
+    inHigh += safeNum(rr.high, 0);
+  }
   const outK = wos.reduce((s, w) => s + safeNum(w.kcal, 0), 0);
-  const netLow = Math.round(inR.low - outK);
-  const netHigh = Math.round(inR.high - outK);
-  const p = meals.reduce((s, m) => s + safeNum(m.final?.p, 0), 0);
-  const c = meals.reduce((s, m) => s + safeNum(m.final?.c, 0), 0);
-  const f = meals.reduce((s, m) => s + safeNum(m.final?.f, 0), 0);
+
+  const { kcalTarget, budgetMode } = getProfileComputed();
+  const basisIn = (budgetMode === "high") ? inHigh : inMid;
+  const remaining = kcalTarget ? Math.round(kcalTarget - basisIn) : null;
+
+  const targetLine = kcalTarget
+    ? `<div>目标 Target: <span class="accent">${Math.round(kcalTarget)}</span> kcal · 口径 ${budgetMode === "high" ? "上限" : "中值"}</div>`
+    : `<div class="muted">可在「个人」里设置每日目标（可选）</div>`;
+
+  const remainingLine = (kcalTarget !== 0 && remaining !== null)
+    ? `<div>剩余 Remaining: <span class="accent">${remaining}</span> kcal</div>`
+    : ``;
 
   document.getElementById("todaySummary").innerHTML = `
-    <div>摄入 In: <span class="accent">${fmtK(inR.low)}–${fmtK(inR.high)}</span> kcal (mid ${fmtK(inK)})</div>
-    <div>训练 Out(est): <span class="accent">${fmtK(outK)}</span> kcal</div>
-    <div>净值 Net: <span class="accent">${fmtK(netLow)}–${fmtK(netHigh)}</span> kcal (mid ${fmtK(inK - outK)})</div>
-    <div class="muted">宏量：P ${p.toFixed(1)}g · C ${c.toFixed(1)}g · F ${f.toFixed(1)}g</div>
+    ${targetLine}
+    <div>摄入 In: <span class="accent">${Math.round(inLow)}–${Math.round(inHigh)}</span> kcal (mid ${Math.round(inMid)})</div>
+    <div>训练 Out(est): <span class="accent">${Math.round(outK)}</span> kcal</div>
+    <div>净值 Net(mid): <span class="accent">${Math.round(inMid - outK)}</span> kcal</div>
+    ${remainingLine}
   `;
 
-  // last 7 days boxes
   const boxes = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-    const iso = d.toISOString().slice(0,10);
+    const iso = d.toISOString().slice(0, 10);
+
     const dayMeals = state.meals.filter(m => sameDayISO(m.time, iso));
     const dayWos = state.workouts.filter(w => sameDayISO(w.time, iso));
-    const inR = dayMeals.reduce((acc, m) => {
-      const r = getMealKcalRange(m);
-      acc.low += r.low; acc.high += r.high;
-      return acc;
-    }, { low: 0, high: 0 });
-    const inK = Math.round((inR.low + inR.high) / 2);
+
+    let dayMid = 0, dayLow = 0, dayHigh = 0;
+    for (const m of dayMeals) {
+      const rr = getMealKcalRange(m);
+      dayMid += safeNum(rr.mid, 0);
+      dayLow += safeNum(rr.low, 0);
+      dayHigh += safeNum(rr.high, 0);
+    }
+
     const outK = dayWos.reduce((s, w) => s + safeNum(w.kcal, 0), 0);
-    boxes.push({ iso, inLow: Math.round(inR.low), inHigh: Math.round(inR.high), inK, outK, netLow: Math.round(inR.low - outK), netHigh: Math.round(inR.high - outK), net: Math.round(inK - outK) });
+    boxes.push({ iso, dayLow, dayHigh, dayMid, outK, net: dayMid - outK });
   }
+
   const weekEl = document.getElementById("weekSummary");
   weekEl.innerHTML = "";
   boxes.reverse().forEach(b => {
@@ -1112,8 +1109,8 @@ async function renderDash() {
     div.className = "dayBox";
     div.innerHTML = `
       <div class="d">${b.iso.slice(5)}</div>
-      <div class="k">In ${fmtK(b.inLow)}–${fmtK(b.inHigh)} · Out ${fmtK(b.outK)}</div>
-      <div class="k">Net ${fmtK(b.netLow)}–${fmtK(b.netHigh)}</div>
+      <div class="k">In ${Math.round(b.dayLow)}–${Math.round(b.dayHigh)} (mid ${Math.round(b.dayMid)})</div>
+      <div class="k">Out ${Math.round(b.outK)} · Net(mid) ${Math.round(b.net)}</div>
     `;
     weekEl.appendChild(div);
   });
@@ -1167,9 +1164,6 @@ async function renderMeals() {
         setTimeout(() => URL.revokeObjectURL(url), 20000);
       }
     }
-
-    const e1 = m.ext1 || {};
-    const e2 = m.ext2 || {};
     const f = m.final || {};
     const rr = (m.finalRange && m.finalRange.kcalLow && m.finalRange.kcalHigh)
       ? { low: Math.round(m.finalRange.kcalLow), high: Math.round(m.finalRange.kcalHigh), mid: Math.round((m.finalRange.kcalLow + m.finalRange.kcalHigh) / 2) }
@@ -1179,8 +1173,7 @@ async function renderMeals() {
         <div>
           <div class="itemTitle">${escapeHtml(m.type)} · ${escapeHtml(m.time.replace("T"," "))}</div>
           <div class="itemMeta">${escapeHtml(m.name || "(未命名)")}</div>
-          <div class="itemMeta">Final: ${fmtK(rr.low)}–${fmtK(rr.high)} kcal (mid ${fmtK(rr.mid)}) · P ${safeNum(f.p,0).toFixed(1)} · C ${safeNum(f.c,0).toFixed(1)} · F ${safeNum(f.f,0).toFixed(1)} · 不确定性 ${safeNum(m.unc,0.35).toFixed(2)}</div>
-          ${(safeNum(e1.kcal,0)||safeNum(e2.kcal,0)) ? `<div class="itemMeta">Ext1 ${fmtK(safeNum(e1.kcal,0))} | Ext2 ${fmtK(safeNum(e2.kcal,0))}</div>` : ``}
+          <div class="itemMeta">kcal: ${fmtK(rr.low)}–${fmtK(rr.high)} (mid ${fmtK(rr.mid)}) · 不确定性 ${safeNum(m.unc,0.35).toFixed(2)}</div>
           ${m.note ? `<div class="itemMeta">${escapeHtml(m.note)}</div>` : ``}
         </div>
         <div class="itemActions">
@@ -1215,18 +1208,7 @@ async function renderMeals() {
       mealTime.value = m.time;
       document.getElementById("mealType").value = m.type;
       document.getElementById("mealName").value = m.name || "";
-      document.getElementById("kcal1").value = safeNum(m.ext1?.kcal,0) || "";
-      document.getElementById("p1").value = safeNum(m.ext1?.p,0) || "";
-      document.getElementById("c1").value = safeNum(m.ext1?.c,0) || "";
-      document.getElementById("f1").value = safeNum(m.ext1?.f,0) || "";
-      document.getElementById("kcal2").value = safeNum(m.ext2?.kcal,0) || "";
-      document.getElementById("p2").value = safeNum(m.ext2?.p,0) || "";
-      document.getElementById("c2").value = safeNum(m.ext2?.c,0) || "";
-      document.getElementById("f2").value = safeNum(m.ext2?.f,0) || "";
       document.getElementById("kcalFinal").value = safeNum(m.final?.kcal,0) || "";
-      document.getElementById("pFinal").value = safeNum(m.final?.p,0) || "";
-      document.getElementById("cFinal").value = safeNum(m.final?.c,0) || "";
-      document.getElementById("fFinal").value = safeNum(m.final?.f,0) || "";
       document.getElementById("mealUnc").value = safeNum(m.unc,0.35).toFixed(2);
       // kcal range
       if (m.finalRange && m.finalRange.kcalLow && m.finalRange.kcalHigh) {
@@ -1331,6 +1313,7 @@ function escapeHtml(s) {
   state.profile.age = safeNum(state.profile.age, 21);
   state.profile.sex = state.profile.sex || "male";
   if (!state.profile.calFactor) state.profile.calFactor = 1.0;
+  if (state.profile.budgetMode !== "high") state.profile.budgetMode = "mid";
 
   await saveState();
   fillProfileUI();
